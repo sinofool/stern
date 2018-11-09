@@ -19,9 +19,12 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"io"
+	v12 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"os"
 	"regexp"
 	"text/template"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/pkg/errors"
@@ -107,11 +110,11 @@ func (t *Tail) Start(ctx context.Context, i v1.PodInterface) {
 			fmt.Println(errors.Wrapf(err, "Error opening stream to %s/%s: %s\n", t.Namespace, t.PodName, t.ContainerName))
 			return
 		}
-		defer stream.Close()
+		// defer stream.Close()
 
 		go func() {
 			<-t.closed
-			stream.Close()
+			// stream.Close()
 		}()
 
 		reader := bufio.NewReader(stream)
@@ -120,6 +123,31 @@ func (t *Tail) Start(ctx context.Context, i v1.PodInterface) {
 		for {
 			line, err := reader.ReadBytes('\n')
 			if err != nil {
+				if err == io.EOF {
+					for {
+						var reconnectTailLines int64 = 0
+						p, err := i.Get(t.PodName, v12.GetOptions{})
+						if err != nil {
+							return
+						}
+						if p == nil {
+							return
+						}
+
+						req = i.GetLogs(t.PodName, &corev1.PodLogOptions{
+							Follow:    true,
+							TailLines: &reconnectTailLines,
+						})
+						stream, err = req.Stream()
+						if err != nil {
+							fmt.Println(errors.Wrapf(err, "Error reopening stream to %s/%s: %s\n", t.Namespace, t.PodName, t.ContainerName))
+							time.Sleep(time.Second)
+							continue
+						}
+						reader = bufio.NewReader(stream)
+						continue OUTER
+					}
+				}
 				return
 			}
 
